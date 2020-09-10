@@ -222,36 +222,36 @@ func (storage *LocalDockerServerStagesStorage) StoreImage(ctx context.Context, i
 	return storage.LocalDockerServerRuntime.TagBuiltImageByName(ctx, img)
 }
 
-func (storage *LocalDockerServerStagesStorage) PutImageCommit(ctx context.Context, projectName, imageName, commit string, metadata *ImageMetadata) error {
-	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.PutImageCommit %s %s %s %#v\n", projectName, imageName, commit, metadata)
+func (storage *LocalDockerServerStagesStorage) PutContentSignatureCommit(ctx context.Context, projectName, contentSignature, commit string) error {
+	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.PutContentSignatureCommit %s %s %s\n", projectName, contentSignature, commit)
 
-	fullImageName := makeLocalImageMetadataByCommitImageRecord(projectName, imageName, commit)
-	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.PutImageCommit full image name: %s\n", fullImageName)
+	fullImageName := localImageMetadataByCommitImageRecordName(projectName, contentSignature, commit)
+	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.PutContentSignatureCommit full image name: %s\n", fullImageName)
 
-	if exsts, err := docker.ImageExist(ctx, fullImageName); err != nil {
+	if exists, err := docker.ImageExist(ctx, fullImageName); err != nil {
 		return fmt.Errorf("unable to check existence of image %q: %s", fullImageName, err)
-	} else if exsts {
+	} else if exists {
 		return nil
 	}
 
-	if err := docker.CreateImage(ctx, fullImageName, map[string]string{"ContentSignature": metadata.ContentSignature}); err != nil {
+	if err := docker.CreateImage(ctx, fullImageName, nil); err != nil {
 		return fmt.Errorf("unable to create image %q: %s", fullImageName, err)
 	}
 
-	logboek.Context(ctx).Info().LogF("Put content-signature %q into metadata for image %q by commit %s\n", metadata.ContentSignature, imageName, commit)
+	logboek.Context(ctx).Info().LogF("Added content-signature %s commit %s record\n", contentSignature, commit)
 
 	return nil
 }
 
-func (storage *LocalDockerServerStagesStorage) RmImageCommit(ctx context.Context, projectName, imageName, commit string) error {
-	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.RmImageCommit %s %s %s\n", projectName, imageName, commit)
+func (storage *LocalDockerServerStagesStorage) RmContentSignatureCommit(ctx context.Context, projectName, contentSignature, commit string) error {
+	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.RmContentSignatureCommit %s %s %s\n", projectName, contentSignature, commit)
 
-	fullImageName := makeLocalImageMetadataByCommitImageRecord(projectName, imageName, commit)
-	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.RmImageCommit full image name: %s\n", fullImageName)
+	fullImageName := localImageMetadataByCommitImageRecordName(projectName, contentSignature, commit)
+	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.RmContentSignatureCommit full image name: %s\n", fullImageName)
 
-	if exsts, err := docker.ImageExist(ctx, fullImageName); err != nil {
+	if exists, err := docker.ImageExist(ctx, fullImageName); err != nil {
 		return fmt.Errorf("unable to check existence of image %s: %s", fullImageName, err)
-	} else if !exsts {
+	} else if !exists {
 		return nil
 	}
 
@@ -259,33 +259,13 @@ func (storage *LocalDockerServerStagesStorage) RmImageCommit(ctx context.Context
 		return fmt.Errorf("unable to remove image %s: %s", fullImageName, err)
 	}
 
-	logboek.Context(ctx).Info().LogF("Removed image %q metadata by commit %s\n", imageName, commit)
+	logboek.Context(ctx).Info().LogF("Removed content-signature %s commit %s\n", contentSignature, commit)
 
 	return nil
 }
 
-func (storage *LocalDockerServerStagesStorage) GetImageMetadataByCommit(ctx context.Context, projectName, imageName, commit string) (*ImageMetadata, error) {
-	logboek.Context(ctx).Debug().LogF("-- RepoStagesStorage.GetImageStagesSignatureByCommit %s %s %s\n", projectName, imageName, commit)
-
-	fullImageName := makeLocalImageMetadataByCommitImageRecord(projectName, imageName, commit)
-	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.GetImageMetadataByCommit full image name: %s\n", fullImageName)
-
-	if inspect, err := storage.LocalDockerServerRuntime.GetImageInspect(ctx, fullImageName); err != nil {
-		return nil, fmt.Errorf("unable to get image %s inspect: %s", fullImageName, err)
-	} else if inspect != nil && inspect.Config != nil && inspect.Config.Labels != nil {
-		metadata := &ImageMetadata{ContentSignature: inspect.Config.Labels["ContentSignature"]}
-
-		logboek.Context(ctx).Debug().LogF("Got content-signature %q from image %q metadata by commit %s\n", metadata.ContentSignature, imageName, commit)
-
-		return metadata, nil
-	} else {
-		logboek.Context(ctx).Debug().LogF("No metadata found for image %q by commit %s\n", imageName, commit)
-		return nil, nil
-	}
-}
-
-func (storage *LocalDockerServerStagesStorage) GetImageCommits(ctx context.Context, projectName, imageName string) ([]string, error) {
-	logboek.Context(ctx).Debug().LogF("-- RepoStagesStorage.GetImageCommits %s %s\n", projectName, imageName)
+func (storage *LocalDockerServerStagesStorage) GetContentSignatureCommits(ctx context.Context, projectName, contentSignature string) ([]string, error) {
+	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.GetContentSignatureCommits %s %s\n", projectName, contentSignature)
 
 	var res []string
 
@@ -303,13 +283,12 @@ func (storage *LocalDockerServerStagesStorage) GetImageCommits(ctx context.Conte
 
 			sluggedImageAndCommitParts := strings.Split(tag, "-")
 			if len(sluggedImageAndCommitParts) < 2 {
-				// unexpected
 				continue
 			}
 
 			commit := sluggedImageAndCommitParts[len(sluggedImageAndCommitParts)-1]
-			if slugLocalImageMetadataByCommitImageRecordTag(imageName, commit) == tag {
-				logboek.Context(ctx).Debug().LogF("Found image %q metadata by commit %s\n", imageName, commit)
+			if localMetaImageRecordTag(contentSignature, commit) == tag {
+				logboek.Context(ctx).Debug().LogF("Found content-signature %s commit %s\n", contentSignature, commit)
 				res = append(res, commit)
 			}
 		}
@@ -318,10 +297,10 @@ func (storage *LocalDockerServerStagesStorage) GetImageCommits(ctx context.Conte
 	return res, nil
 }
 
-func makeLocalImageMetadataByCommitImageRecord(projectName, imageName, commit string) string {
+func localImageMetadataByCommitImageRecordName(projectName, imageName, commit string) string {
 	return strings.Join([]string{
 		fmt.Sprintf(LocalImageMetadataByCommitRecord_ImageNameFormat, projectName),
-		slugLocalImageMetadataByCommitImageRecordTag(imageName, commit),
+		localMetaImageRecordTag(imageName, commit),
 	}, ":")
 }
 
