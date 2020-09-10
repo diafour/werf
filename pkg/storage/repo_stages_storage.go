@@ -317,30 +317,74 @@ func (storage *RepoStagesStorage) GetContentSignatureCommits(ctx context.Context
 	logboek.Context(ctx).Debug().LogF("-- RepoStagesStorage.GetContentSignatureCommits %s %s\n", projectName, contentSignature)
 
 	var res []string
-
-	if tags, err := storage.DockerRegistry.Tags(ctx, storage.RepoAddress); err != nil {
-		return nil, fmt.Errorf("unable to get repo %s tags: %s", storage.RepoAddress, err)
-	} else {
-		for _, tag := range tags {
-			if !strings.HasPrefix(tag, RepoImageMetadataByCommitRecord_ImageTagPrefix) {
-				continue
-			}
-
-			sluggedImageAndCommit := strings.TrimPrefix(tag, RepoImageMetadataByCommitRecord_ImageTagPrefix)
-			sluggedImageAndCommitParts := strings.Split(sluggedImageAndCommit, "-")
-			if len(sluggedImageAndCommitParts) < 2 {
-				continue
-			}
-
-			commit := sluggedImageAndCommitParts[len(sluggedImageAndCommitParts)-1]
-			if repoMetaImageRecordTag(contentSignature, commit) == tag {
-				logboek.Context(ctx).Debug().LogF("Found content-signature %s commit %s (%s:%s)\n", contentSignature, commit, storage.RepoAddress, tag)
-				res = append(res, commit)
-			}
+	if err := storage.handleMetadataRecordTags(ctx, func(tag string) error {
+		contentSignatureAndCommit := strings.TrimPrefix(tag, RepoImageMetadataByCommitRecord_ImageTagPrefix)
+		contentSignatureAndCommitParts := strings.Split(contentSignatureAndCommit, "-")
+		if len(contentSignatureAndCommitParts) < 2 {
+			return nil
 		}
+
+		commit := contentSignatureAndCommitParts[len(contentSignatureAndCommitParts)-1]
+		if repoMetaImageRecordTag(contentSignature, commit) == tag {
+			logboek.Context(ctx).Debug().LogF("Found content-signature %s commit %s (%s:%s)\n", contentSignature, commit, storage.RepoAddress, tag)
+			res = append(res, commit)
+		}
+
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return res, nil
+}
+
+func (storage *RepoStagesStorage) GetCommitsByContentSignature(ctx context.Context, projectName string) (map[string][]string, error) {
+	logboek.Context(ctx).Debug().LogF("-- RepoStagesStorage.GetCommitsByContentSignature %s\n", projectName)
+
+	res := map[string][]string{}
+	if err := storage.handleMetadataRecordTags(ctx, func(tag string) error {
+		contentSignatureAndCommit := strings.TrimPrefix(tag, RepoImageMetadataByCommitRecord_ImageTagPrefix)
+		contentSignatureAndCommitParts := strings.Split(contentSignatureAndCommit, "-")
+		if len(contentSignatureAndCommitParts) < 2 {
+			return nil
+		}
+
+		contentSignature := strings.Join(contentSignatureAndCommitParts[:len(contentSignatureAndCommitParts)-1], "-")
+		commit := contentSignatureAndCommitParts[len(contentSignatureAndCommitParts)-1]
+
+		commits, ok := res[contentSignature]
+		if !ok {
+			commits = []string{}
+		}
+
+		commits = append(commits, commit)
+		res[contentSignature] = commits
+
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+func (storage *RepoStagesStorage) handleMetadataRecordTags(ctx context.Context, handleFunc func(tag string) error) error {
+	tags, err := storage.DockerRegistry.Tags(ctx, storage.RepoAddress)
+	if err != nil {
+		return fmt.Errorf("unable to get repo %s tags: %s", storage.RepoAddress, err)
+	}
+
+	for _, tag := range tags {
+		if !strings.HasPrefix(tag, RepoImageMetadataByCommitRecord_ImageTagPrefix) {
+			continue
+		}
+
+		if err := handleFunc(tag); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func repoImageMetadataByCommitImageRecordName(repoAddress, imageName, commit string) string {
@@ -367,7 +411,7 @@ func repoMetaImageRecordTag(contentSignature string, commit string) string {
 }
 
 func localMetaImageRecordTag(contentSignature string, commit string) string {
-	return fmt.Sprintf(LocalImageMetadataByCommitRecord_TagFormat, contentSignature, commit)
+	return fmt.Sprintf(LocalMetadataRecord_TagFormat, contentSignature, commit)
 }
 
 func slugImageNameAsDockerImageTag(imageName string) string {

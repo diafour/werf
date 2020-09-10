@@ -26,8 +26,8 @@ const (
 	LocalManagedImageRecord_ImageNameFormat = "werf-managed-images/%s"
 	LocalManagedImageRecord_ImageFormat     = "werf-managed-images/%s:%s"
 
-	LocalImageMetadataByCommitRecord_ImageNameFormat = "werf-images-metadata-by-commit/%s"
-	LocalImageMetadataByCommitRecord_TagFormat       = "%s-%s"
+	LocalMetadataRecord_ImageNameFormat = "werf-images-metadata-by-commit/%s"
+	LocalMetadataRecord_TagFormat       = "%s-%s"
 
 	LocalClientIDRecord_ImageNameFormat = "werf-client-id/%s"
 	LocalClientIDRecord_ImageFormat     = "werf-client-id/%s:%s-%d"
@@ -268,38 +268,80 @@ func (storage *LocalDockerServerStagesStorage) GetContentSignatureCommits(ctx co
 	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.GetContentSignatureCommits %s %s\n", projectName, contentSignature)
 
 	var res []string
+	if err := storage.handleMetadataRecordTags(ctx, projectName, func(_ types.ImageSummary, tag string) error {
+		contentSignatureAndCommitParts := strings.Split(tag, "-")
+		if len(contentSignatureAndCommitParts) < 2 {
+			return nil
+		}
 
+		commit := contentSignatureAndCommitParts[len(contentSignatureAndCommitParts)-1]
+		if localMetaImageRecordTag(contentSignature, commit) == tag {
+			logboek.Context(ctx).Debug().LogF("Found content-signature %s commit %s\n", contentSignature, commit)
+			res = append(res, commit)
+		}
+
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+func (storage *LocalDockerServerStagesStorage) GetCommitsByContentSignature(ctx context.Context, projectName string) (map[string][]string, error) {
+	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.GetCommitsByContentSignature %s\n", projectName)
+
+	res := map[string][]string{}
+	if err := storage.handleMetadataRecordTags(ctx, projectName, func(_ types.ImageSummary, tag string) error {
+		contentSignatureAndCommitParts := strings.Split(tag, "-")
+		if len(contentSignatureAndCommitParts) < 2 {
+			return nil
+		}
+
+		contentSignature := strings.Join(contentSignatureAndCommitParts[:len(contentSignatureAndCommitParts)-1], "-")
+		commit := contentSignatureAndCommitParts[len(contentSignatureAndCommitParts)-1]
+
+		commits, ok := res[contentSignature]
+		if !ok {
+			commits = []string{}
+		}
+
+		commits = append(commits, commit)
+		res[contentSignature] = commits
+
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+func (storage *LocalDockerServerStagesStorage) handleMetadataRecordTags(ctx context.Context, projectName string, handleFunc func(image types.ImageSummary, tag string) error) error {
 	filterSet := filters.NewArgs()
-	filterSet.Add("reference", fmt.Sprintf(LocalImageMetadataByCommitRecord_ImageNameFormat, projectName))
+	filterSet.Add("reference", fmt.Sprintf(LocalMetadataRecord_ImageNameFormat, projectName))
 
 	images, err := docker.Images(ctx, types.ImageListOptions{Filters: filterSet})
 	if err != nil {
-		return nil, fmt.Errorf("unable to get docker images: %s", err)
+		return fmt.Errorf("unable to get docker images: %s", err)
 	}
 
 	for _, img := range images {
 		for _, repoTag := range img.RepoTags {
 			_, tag := image.ParseRepositoryAndTag(repoTag)
 
-			sluggedImageAndCommitParts := strings.Split(tag, "-")
-			if len(sluggedImageAndCommitParts) < 2 {
-				continue
-			}
-
-			commit := sluggedImageAndCommitParts[len(sluggedImageAndCommitParts)-1]
-			if localMetaImageRecordTag(contentSignature, commit) == tag {
-				logboek.Context(ctx).Debug().LogF("Found content-signature %s commit %s\n", contentSignature, commit)
-				res = append(res, commit)
+			if err := handleFunc(img, tag); err != nil {
+				return err
 			}
 		}
 	}
 
-	return res, nil
+	return err
 }
 
 func localImageMetadataByCommitImageRecordName(projectName, imageName, commit string) string {
 	return strings.Join([]string{
-		fmt.Sprintf(LocalImageMetadataByCommitRecord_ImageNameFormat, projectName),
+		fmt.Sprintf(LocalMetadataRecord_ImageNameFormat, projectName),
 		localMetaImageRecordTag(imageName, commit),
 	}, ":")
 }

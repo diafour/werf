@@ -22,8 +22,7 @@ import (
 const stagesCleanupDefaultIgnorePeriodPolicy = 2 * 60 * 60
 
 type StagesCleanupOptions struct {
-	ImageNameList []string
-	DryRun        bool
+	DryRun bool
 }
 
 func StagesCleanup(ctx context.Context, projectName string, imagesRepo storage.ImagesRepo, stagesManager *stages_manager.StagesManager, storageLockManager storage.LockManager, options StagesCleanupOptions) error {
@@ -44,10 +43,8 @@ func StagesCleanup(ctx context.Context, projectName string, imagesRepo storage.I
 		})
 }
 
-func newStagesCleanupManager(projectName string, imagesRepo storage.ImagesRepo, stagesManager *stages_manager.StagesManager, options StagesCleanupOptions) *stagesCleanupManager {
+func newStagesCleanupManager(projectName string, stagesManager *stages_manager.StagesManager, options StagesCleanupOptions) *stagesCleanupManager {
 	return &stagesCleanupManager{
-		ImagesRepo:    imagesRepo,
-		ImageNameList: options.ImageNameList,
 		StagesManager: stagesManager,
 		ProjectName:   projectName,
 		DryRun:        options.DryRun,
@@ -57,8 +54,6 @@ func newStagesCleanupManager(projectName string, imagesRepo storage.ImagesRepo, 
 type stagesCleanupManager struct {
 	imagesRepoImageList *[]*image.Info
 
-	ImagesRepo    storage.ImagesRepo
-	ImageNameList []string
 	StagesManager *stages_manager.StagesManager
 	ProjectName   string
 	DryRun        bool
