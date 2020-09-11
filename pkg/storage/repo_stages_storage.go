@@ -338,7 +338,7 @@ func (storage *RepoStagesStorage) GetContentSignatureCommits(ctx context.Context
 	return res, nil
 }
 
-func (storage *RepoStagesStorage) GetCommitsByContentSignature(ctx context.Context, projectName string) (map[string][]string, error) {
+func (storage *RepoStagesStorage) GetCommitsByMetaTag(ctx context.Context, projectName string) (map[string][]string, error) {
 	logboek.Context(ctx).Debug().LogF("-- RepoStagesStorage.GetCommitsByContentSignature %s\n", projectName)
 
 	res := map[string][]string{}

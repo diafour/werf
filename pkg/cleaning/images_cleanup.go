@@ -70,7 +70,12 @@ func newImagesCleanupManager(projectName string, stagesManager *stages_manager.S
 }
 
 type imagesCleanupManager struct {
-	contentSignatureCommitHashes *map[string][]plumbing.Hash
+	stages []*image.StageDescription
+
+	tagCommitHashes            map[string][]plumbing.Hash
+	tagToCleanupCommitHashes   map[string][]plumbing.Hash
+	tagNonexistentCommitHashes map[string][]plumbing.Hash
+	nonexistentTagCommitHashes map[string][]plumbing.Hash
 
 	ProjectName                             string
 	StagesManager                           *stages_manager.StagesManager
@@ -88,8 +93,12 @@ type GitRepo interface {
 }
 
 func (m *imagesCleanupManager) initMetadata(ctx context.Context) error {
+	if err := m.initStages(ctx); err != nil { // TODO
+		return err
+	}
+
 	if err := logboek.Context(ctx).Info().LogProcess("Fetching images metadata").DoError(func() error {
-		return m.initContentSignatureCommitHashes(ctx)
+		return m.initTagCommitHashes(ctx)
 	}); err != nil {
 		return err
 	}
@@ -97,44 +106,108 @@ func (m *imagesCleanupManager) initMetadata(ctx context.Context) error {
 	return nil
 }
 
-func (m *imagesCleanupManager) initContentSignatureCommitHashes(ctx context.Context) error {
-	contentSignatureCommitHashes := map[string][]plumbing.Hash{}
-
-	contentSignatureCommits, err := m.StagesManager.StagesStorage.GetCommitsByContentSignature(ctx, m.ProjectName)
+func (m *imagesCleanupManager) initStages(ctx context.Context) error {
+	stages, err := m.StagesManager.GetAllStages(ctx)
 	if err != nil {
 		return err
 	}
 
-	for contentSignature, commits := range contentSignatureCommits {
-		var commitHashes []plumbing.Hash
+	m.stages = stages
+	return nil
+}
 
-		for _, commit := range commits {
-			commitHashes = append(commitHashes, plumbing.NewHash(commit))
+func (m *imagesCleanupManager) deleteStage(stagesToDelete ...*image.StageDescription) {
+	var resultStages []*image.StageDescription
+
+	outerLoop:
+	for _, stage := range m.stages {
+		for _, stageToDelete := range stagesToDelete {
+			if stage == stageToDelete {
+			continue outerLoop
+			}
 		}
 
-		contentSignatureCommitHashes[contentSignature] = commitHashes
+		resultStages = append(resultStages, stage)
 	}
 
-	m.setContentSignatureCommitHashes(contentSignatureCommitHashes)
+	m.stages = resultStages
+}
+
+func (m *imagesCleanupManager) isStageExist(tag string) bool {
+	stage := m.getStage(tag)
+	return stage != nil
+}
+
+func (m *imagesCleanupManager) getStage(tag string) *image.StageDescription  {
+	for _, stage := range m.stages {
+		if tag == stage.Info.Tag {
+			return stage
+		}
+	}
 
 	return nil
 }
 
-func (m *imagesCleanupManager) getContentSignatureCommitHashes() map[string][]plumbing.Hash {
-	return *m.contentSignatureCommitHashes
-}
+func (m *imagesCleanupManager) initTagCommitHashes(ctx context.Context) error {
+	m.tagCommitHashes = map[string][]plumbing.Hash{}
+	m.tagToCleanupCommitHashes = map[string][]plumbing.Hash{}
+	m.tagNonexistentCommitHashes = map[string][]plumbing.Hash{}
+	m.nonexistentTagCommitHashes = map[string][]plumbing.Hash{}
 
-func (m *imagesCleanupManager) getContentSignatureList() []string {
-	var res []string
-	for contentSignature, _ := range *m.contentSignatureCommitHashes {
-		res = append(res, contentSignature)
+	metaTagCommits, err := m.StagesManager.StagesStorage.GetCommitsByMetaTag(ctx, m.ProjectName)
+	if err != nil {
+		return err
 	}
 
-	return res
+	for metaTag, commits := range metaTagCommits {
+		var commitHashes []plumbing.Hash
+		var nonexistentCommitHashes []plumbing.Hash
+
+		for _, commit := range commits {
+			exist, err := m.LocalGit.IsCommitExists(ctx, commit)
+			if err != nil {
+				return fmt.Errorf("") // TODO
+			}
+
+			commitHash := plumbing.NewHash(commit)
+			if exist {
+				commitHashes = append(commitHashes, commitHash)
+			} else {
+				nonexistentCommitHashes = append(nonexistentCommitHashes, commitHash)
+			}
+
+		}
+
+		if m.isStageExist(metaTag) {
+			if len(commitHashes) != 0 {
+				m.tagCommitHashes[metaTag] = commitHashes
+				m.tagToCleanupCommitHashes[metaTag] = commitHashes
+			}
+
+			if len(nonexistentCommitHashes) != 0 {
+				m.tagNonexistentCommitHashes[metaTag] = nonexistentCommitHashes
+			}
+		} else if len(commitHashes) != 0 {
+			m.nonexistentTagCommitHashes[metaTag] = commitHashes
+		}
+	}
+
+	return nil
 }
 
-func (m *imagesCleanupManager) setContentSignatureCommitHashes(contentSignatureCommitHashes map[string][]plumbing.Hash) {
-	m.contentSignatureCommitHashes = &contentSignatureCommitHashes
+func (m *imagesCleanupManager) getTagList() []string {
+	var list []string
+	for tag, _ := range m.tagCommitHashes {
+		list = append(list, tag)
+	}
+
+	return list
+}
+
+func (m *imagesCleanupManager) skipTag(tags ...string) {
+	for _, tag := range tags {
+		delete(m.tagToCleanupCommitHashes, tag)
+	}
 }
 
 func (m *imagesCleanupManager) setImageCommitHashImageMetadata(imageCommitHashImageMetadata map[string]map[plumbing.Hash]*storage.ImageMetadata) {
@@ -171,70 +244,47 @@ func (m *imagesCleanupManager) run(ctx context.Context) error {
 			return err
 		}
 
-		contentSignaturesToCleanup := m.getContentSignatureList()
-		var exceptedRepoImages []string
-		var resultRepoImages []string
-
 		if m.LocalGit == nil {
 			logboek.Context(ctx).Default().LogLnDetails("Images cleanup skipped due to local git repository was not detected")
 			return nil
 		}
 
-		var err error
-
 		if !m.WithoutKube {
 			if err := logboek.Context(ctx).LogProcess("Skipping repo images that are being used in Kubernetes").DoError(func() error {
-				contentSignaturesToCleanup, exceptedRepoImages, err = m.exceptContentSignaturesByWhitelist(ctx, contentSignaturesToCleanup, m.KubernetesContextClients, m.KubernetesNamespaceRestrictionByContext)
-				return err
+				return m.skipTagsThatAreUsedInKubernetes(ctx)
 			}); err != nil {
 				return err
 			}
 		}
 
-		resultRepoImages, err = m.repoImagesGitHistoryBasedCleanup(ctx, repoImagesToCleanup)
-		if err != nil {
+		if err := m.gitHistoryBasedCleanup(ctx); err != nil {
 			return err
 		}
-
-		for imageName, repoImageList := range exceptedRepoImages {
-			_, ok := resultRepoImages[imageName]
-			if !ok {
-				resultRepoImages[imageName] = repoImageList
-			} else {
-				resultRepoImages[imageName] = append(resultRepoImages[imageName], repoImageList...)
-			}
-		}
-
-		m.setImageRepoImageList(resultRepoImages)
 
 		return nil
 	})
 }
 
-func (m *imagesCleanupManager) exceptContentSignaturesByWhitelist(ctx context.Context, contentSignatures []string, kubernetesContextClients []*kube.ContextClient, kubernetesNamespaceRestrictionByContext map[string]string) ([]string, []string, error) {
-	deployedDockerImagesNames, err := getDeployedDockerImagesNames(ctx, kubernetesContextClients, kubernetesNamespaceRestrictionByContext)
+func (m *imagesCleanupManager) skipTagsThatAreUsedInKubernetes(ctx context.Context) error {
+	deployedDockerImagesNames, err := getDeployedDockerImagesNames(ctx, m.KubernetesContextClients, m.KubernetesNamespaceRestrictionByContext)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 
-	var resultContentSignature []string
-	var exceptedContentSignatures []string
 Loop:
-	for _, contentSignature := range contentSignatures {
-		dockerImageName := fmt.Sprintf("%s:%s", m.StagesManager.StagesStorage.String(), contentSignature)
+	for _, tag := range m.getTagList() {
+		dockerImageName := fmt.Sprintf("%s:%s", m.StagesManager.StagesStorage.String(), tag)
 		for _, deployedDockerImageName := range deployedDockerImagesNames {
 			if deployedDockerImageName == dockerImageName {
-				exceptedContentSignatures = append(exceptedContentSignatures, contentSignature)
-				logboek.Context(ctx).Default().LogFDetails("  tag: %s\n", contentSignature)
+				m.skipTag(tag)
+				logboek.Context(ctx).Default().LogFDetails("  tag: %s\n", tag)
 				logboek.Context(ctx).LogOptionalLn()
 				continue Loop
 			}
 		}
-
-		resultContentSignature = append(resultContentSignature, contentSignature)
 	}
 
-	return resultContentSignature, exceptedContentSignatures, nil
+	return nil
 }
 
 func getDeployedDockerImagesNames(ctx context.Context, kubernetesContextClients []*kube.ContextClient, kubernetesNamespaceRestrictionByContext map[string]string) ([]string, error) {
@@ -258,12 +308,10 @@ func getDeployedDockerImagesNames(ctx context.Context, kubernetesContextClients 
 	return deployedDockerImagesNames, nil
 }
 
-func (m *imagesCleanupManager) repoImagesGitHistoryBasedCleanup(ctx context.Context, repoImagesToCleanup map[string][]*image.Info) (map[string][]*image.Info, error) {
-	resultRepoImages := map[string][]*image.Info{}
-
+func (m *imagesCleanupManager) gitHistoryBasedCleanup(ctx context.Context) error {
 	gitRepository, err := m.LocalGit.PlainOpen()
 	if err != nil {
-		return nil, fmt.Errorf("git plain open failed: %s", err)
+		return fmt.Errorf("git plain open failed: %s", err)
 	}
 
 	var referencesToScan []*referenceToScan
@@ -271,83 +319,51 @@ func (m *imagesCleanupManager) repoImagesGitHistoryBasedCleanup(ctx context.Cont
 		referencesToScan, err = getReferencesToScan(ctx, gitRepository, m.GitHistoryBasedCleanupOptions.KeepPolicies)
 		return err
 	}); err != nil {
-		return nil, err
+		return err
 	}
 
-	var imageContentSignatureRepoImageListToCleanup map[string]map[string][]*image.Info
-	var imageContentSignatureExistingCommitHashes map[string]map[string][]plumbing.Hash
-	if err := logboek.Context(ctx).Info().LogProcess("Grouping repo images tags by content signature").DoError(func() error {
-		imageContentSignatureRepoImageListToCleanup, err = m.getImageContentSignatureRepoImageListToCleanup(repoImagesToCleanup)
-		if err != nil {
-			return err
-		}
-
-		imageContentSignatureExistingCommitHashes, err = m.getImageContentSignatureExistingCommitHashes(ctx)
-		if err != nil {
-			return err
-		}
-
+	if err := logboek.Context(ctx).Info().LogProcess("Grouping repo images tags by content signature").DoError(func() error { // TODO
 		if logboek.Context(ctx).Info().IsAccepted() {
-			for imageName, contentSignatureRepoImageListToCleanup := range imageContentSignatureRepoImageListToCleanup {
-				if len(contentSignatureRepoImageListToCleanup) == 0 {
+			var rows [][]interface{}
+			for tag, commitHashes := range m.tagToCleanupCommitHashes {
+				if len(commitHashes) == 0 {
 					continue
 				}
 
-				logProcess := logboek.Context(ctx).Info().LogProcess(logging.ImageLogProcessName(imageName, false))
-				logProcess.Start()
+				maxInd := len(commitHashes)
 
-				var rows [][]interface{}
-				for contentSignature, repoImageListToCleanup := range contentSignatureRepoImageListToCleanup {
-					commitHashes := imageContentSignatureExistingCommitHashes[imageName][contentSignature]
-					if len(commitHashes) == 0 || len(repoImageListToCleanup) == 0 {
-						continue
+				shortify := func(column string, maxLength int) string {
+					if maxLength < 0 {
+						maxLength = 5
 					}
 
-					var maxInd int
-					for _, length := range []int{len(commitHashes), len(repoImageListToCleanup)} {
-						if length > maxInd {
-							maxInd = length
-						}
-					}
-
-					shortify := func(column string) string {
-						if len(column) > 15 {
-							return fmt.Sprintf("%s..%s", column[:10], column[len(column)-3:])
-						} else {
-							return column
-						}
-					}
-
-					for ind := 0; ind < maxInd; ind++ {
-						var columns []interface{}
-						if ind == 0 {
-							columns = append(columns, shortify(contentSignature))
-						} else {
-							columns = append(columns, "")
-						}
-
-						if len(commitHashes) > ind {
-							columns = append(columns, shortify(commitHashes[ind].String()))
-						} else {
-							columns = append(columns, "")
-						}
-
-						if len(repoImageListToCleanup) > ind {
-							column := repoImageListToCleanup[ind].Tag
-							if logboek.Context(ctx).Streams().ContentWidth() < 100 {
-								column = shortify(column)
-							}
-							columns = append(columns, column)
-						} else {
-							columns = append(columns, "")
-						}
-
-						rows = append(rows, columns)
+					if len(column) > 15 {
+						return fmt.Sprintf("%s..%s", column[:10], column[len(column)-3:])
+					} else {
+						return column
 					}
 				}
 
+				const commitLength = 40
+				for ind := 0; ind < maxInd; ind++ {
+					var columns []interface{}
+					if ind == 0 {
+						columns = append(columns, shortify(tag, logboek.Context(ctx).Streams().ContentWidth()-commitLength))
+					} else {
+						columns = append(columns, "")
+					}
+
+					if len(commitHashes) > ind {
+						columns = append(columns, shortify(commitHashes[ind].String()))
+					} else {
+						columns = append(columns, "")
+					}
+
+					rows = append(rows, columns)
+				}
+
 				if len(rows) != 0 {
-					tbl := table.New("Content Signature", "Existing Commits", "Tags")
+					tbl := table.New("Tag", "Commits")
 					tbl.WithWriter(logboek.Context(ctx).ProxyOutStream())
 					tbl.WithHeaderFormatter(color.New(color.Underline).SprintfFunc())
 					for _, row := range rows {
@@ -358,10 +374,10 @@ func (m *imagesCleanupManager) repoImagesGitHistoryBasedCleanup(ctx context.Cont
 					logboek.Context(ctx).LogOptionalLn()
 				}
 
-				for contentSignature, repoImageListToCleanup := range contentSignatureRepoImageListToCleanup {
-					commitHashes := imageContentSignatureExistingCommitHashes[imageName][contentSignature]
+				for tag, repoImageListToCleanup := range tagRepoImageListToCleanup {
+					commitHashes := imageTagExistingCommitHashes[imageName][tag]
 					if len(commitHashes) == 0 && len(repoImageListToCleanup) != 0 {
-						logBlockMessage := fmt.Sprintf("Content signature %s is associated with non-existing commits. The following tags will be deleted", contentSignature)
+						logBlockMessage := fmt.Sprintf("Content signature %s is associated with non-existing commits. The following tags will be deleted", tag)
 						logboek.Context(ctx).Info().LogBlock(logBlockMessage).Do(func() {
 							for _, repoImage := range repoImageListToCleanup {
 								logboek.Context(ctx).Info().LogFDetails("  tag: %s\n", repoImage.Tag)
@@ -377,7 +393,7 @@ func (m *imagesCleanupManager) repoImagesGitHistoryBasedCleanup(ctx context.Cont
 
 		return nil
 	}); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := logboek.Context(ctx).Default().LogProcess("Git history based cleanup").
@@ -385,59 +401,13 @@ func (m *imagesCleanupManager) repoImagesGitHistoryBasedCleanup(ctx context.Cont
 			options.Style(style.Highlight())
 		}).
 		DoError(func() error {
-			for imageName, repoImageListToCleanup := range repoImagesToCleanup {
-				var repoImageListToSave []*image.Info
-				var commitHashesToCleanup []plumbing.Hash
-
-				if err := logboek.Context(ctx).LogProcess(logging.ImageLogProcessName(imageName, false)).DoError(func() error {
+					var reachedTagList []string
 					if err := logboek.Context(ctx).LogProcess("Scanning git references history").DoError(func() error {
-						var commitHashes []plumbing.Hash
-						contentSignatureCommitHashes := map[string][]plumbing.Hash{}
-						contentSignatureRepoImageListToCleanup := imageContentSignatureRepoImageListToCleanup[imageName]
-						for contentSignature, _ := range contentSignatureRepoImageListToCleanup {
-							existingCommitHashes := imageContentSignatureExistingCommitHashes[imageName][contentSignature]
-							if len(existingCommitHashes) == 0 {
-								continue
-							}
-
-							contentSignatureCommitHashes[contentSignature] = existingCommitHashes
-							commitHashes = append(commitHashes, existingCommitHashes...)
-						}
-
-						var repoImageListToKeep []*image.Info
-						if len(contentSignatureCommitHashes) != 0 {
-							reachedContentSignatureList, hitCommitHashes, err := scanReferencesHistory(ctx, gitRepository, referencesToScan, contentSignatureCommitHashes)
+						if len(m.tagToCleanupCommitHashes) != 0 {
+							reachedTagList, err = scanReferencesHistory(ctx, gitRepository, referencesToScan, m.tagToCleanupCommitHashes)
 							if err != nil {
 								return err
 							}
-
-							if len(hitCommitHashes) == 0 {
-								commitHashesToCleanup = commitHashes
-							} else {
-							commitHashesLoop:
-								for _, commitHash := range commitHashes {
-									for _, hitCommitHash := range hitCommitHashes {
-										if commitHash == hitCommitHash {
-											continue commitHashesLoop
-										}
-									}
-
-									commitHashesToCleanup = append(commitHashesToCleanup, commitHash)
-								}
-							}
-
-							for _, contentSignature := range reachedContentSignatureList {
-								contentSignatureRepoImageListToCleanup, ok := imageContentSignatureRepoImageListToCleanup[imageName][contentSignature]
-								if !ok {
-									panic("runtime error")
-								}
-
-								repoImageListToKeep = append(repoImageListToKeep, contentSignatureRepoImageListToCleanup...)
-							}
-
-							repoImageListToSave = append(repoImageListToSave, repoImageListToKeep...)
-							resultRepoImages[imageName] = append(resultRepoImages[imageName], repoImageListToKeep...)
-							repoImageListToCleanup = exceptRepoImageList(repoImageListToCleanup, repoImageListToKeep...)
 						} else {
 							logboek.Context(ctx).LogLn("Scanning stopped due to nothing to seek")
 						}
@@ -447,18 +417,50 @@ func (m *imagesCleanupManager) repoImagesGitHistoryBasedCleanup(ctx context.Cont
 						return err
 					}
 
-					if len(repoImageListToSave) != 0 {
+					if len(reachedTagList) != 0 {
 						logboek.Context(ctx).Default().LogBlock("Saved tags").Do(func() {
-							for _, repoImage := range repoImageListToSave {
-								logboek.Context(ctx).Default().LogFDetails("  tag: %s\n", repoImage.Tag)
+							for _, tag := range reachedTagList {
+								logboek.Context(ctx).Default().LogFDetails("  tag: %s\n", tag)
 								logboek.Context(ctx).LogOptionalLn()
 							}
 						})
 					}
 
-					if len(repoImageListToCleanup) != 0 {
+					var metaTagsToDelete []string
+					var stagesToDelete []*image.StageDescription
+
+				outerLoop:
+					for tag, _ := range m.tagToCleanupCommitHashes {
+						for _, reachedTag := range reachedTagList {
+							if tag == reachedTag {
+								continue outerLoop
+							}
+						}
+
+						metaTagsToDelete = append(metaTagsToDelete, tag)
+
+						stage := m.getStage(tag)
+						if stage == nil {
+							panic(fmt.Sprintf("runtime error: stage was not found in memory by tag %s", tag))
+						}
+						stagesToDelete = append(stagesToDelete, stage)
+					}
+
+					if len(stagesToDelete) != 0 {
 						if err := logboek.Context(ctx).Default().LogProcess("Deleting tags").DoError(func() error {
-							return deleteRepoImageInImagesRepo(ctx, m.ImagesRepo, m.DryRun, repoImageListToCleanup...)
+							return m.deleteStageInStagesStorage(ctx, stagesToDelete...)
+						}); err != nil {
+							return err
+						}
+					}
+
+					if len(metaTagsToDelete) != 0 || len(m.nonexistentTagCommitHashes) != 0 || len(m.tagNonexistentCommitHashes) != 0 {
+						if err := logboek.Context(ctx).Default().LogProcess("Deleting meta images").DoError(func() error {
+							for _, metaTag := range metaTagsToDelete {
+
+							}
+
+
 						}); err != nil {
 							return err
 						}
@@ -490,7 +492,7 @@ func (m *imagesCleanupManager) repoImagesGitHistoryBasedCleanup(ctx context.Cont
 	}
 
 	if err := logboek.Context(ctx).Default().LogProcess("Deleting unused images metadata").DoError(func() error {
-		imageUnusedCommitHashes, err := m.getImageUnusedCommitHashes(resultRepoImages)
+		imageUnusedCommitHashes, err := m.getImageUnusedCommitHashes(resultTags)
 		if err != nil {
 			return err
 		}
@@ -514,43 +516,43 @@ func (m *imagesCleanupManager) repoImagesGitHistoryBasedCleanup(ctx context.Cont
 		return nil, err
 	}
 
-	return resultRepoImages, nil
+	return resultTags, nil
 }
 
-// getImageContentSignatureRepoImageListToCleanup groups images, content signatures and repo images tags to clean up.
+// getImageTagRepoImageListToCleanup groups images, content signatures and repo images tags to clean up.
 // The map has all content signatures and each value is related to repo images tags to clean up and can be empty.
 // Repo images tags to clean up are all tags for particular werf.yaml image except for ones which are using in Kubernetes.
-func (m *imagesCleanupManager) getImageContentSignatureRepoImageListToCleanup(repoImagesToCleanup map[string][]*image.Info) (map[string]map[string][]*image.Info, error) {
-	imageContentSignatureRepoImageListToCleanup := map[string]map[string][]*image.Info{}
+func (m *imagesCleanupManager) getImageTagRepoImageListToCleanup(repoImagesToCleanup map[string][]*image.Info) (map[string]map[string][]*image.Info, error) {
+	imageTagRepoImageListToCleanup := map[string]map[string][]*image.Info{}
 
-	imageCommitHashImageMetadata := m.getContentSignatureCommitHashes()
+	imageCommitHashImageMetadata := m.getTagCommitHashes()
 	for imageName, repoImageListToCleanup := range repoImagesToCleanup {
-		imageContentSignatureRepoImageListToCleanup[imageName] = map[string][]*image.Info{}
+		imageTagRepoImageListToCleanup[imageName] = map[string][]*image.Info{}
 
 		for _, imageMetadata := range imageCommitHashImageMetadata[imageName] {
-			_, ok := imageContentSignatureRepoImageListToCleanup[imageName][imageMetadata.ContentSignature]
+			_, ok := imageTagRepoImageListToCleanup[imageName][imageMetadata.Tag]
 			if ok {
 				continue
 			}
 
 			var repoImageListToCleanupBySignature []*image.Info
 			for _, repoImage := range repoImageListToCleanup {
-				if repoImage.Labels[image.WerfContentSignatureLabel] == imageMetadata.ContentSignature {
+				if repoImage.Labels[image.WerfTagLabel] == imageMetadata.Tag {
 					repoImageListToCleanupBySignature = append(repoImageListToCleanupBySignature, repoImage)
 				}
 			}
 
-			imageContentSignatureRepoImageListToCleanup[imageName][imageMetadata.ContentSignature] = repoImageListToCleanupBySignature
+			imageTagRepoImageListToCleanup[imageName][imageMetadata.Tag] = repoImageListToCleanupBySignature
 		}
 	}
 
-	return imageContentSignatureRepoImageListToCleanup, nil
+	return imageTagRepoImageListToCleanup, nil
 }
 
 func (m *imagesCleanupManager) getImageUnusedCommitHashes(resultImageRepoImageList map[string][]*image.Info) (map[string][]plumbing.Hash, error) {
 	unusedImageCommitHashes := map[string][]plumbing.Hash{}
 
-	for imageName, commitHashImageMetadata := range m.getContentSignatureCommitHashes() {
+	for imageName, commitHashImageMetadata := range m.getTagCommitHashes() {
 		var unusedCommitHashes []plumbing.Hash
 		repoImageList, ok := resultImageRepoImageList[imageName]
 		if !ok {
@@ -560,7 +562,7 @@ func (m *imagesCleanupManager) getImageUnusedCommitHashes(resultImageRepoImageLi
 	outerLoop:
 		for commitHash, imageMetadata := range commitHashImageMetadata {
 			for _, repoImage := range repoImageList {
-				if repoImage.Labels[image.WerfContentSignatureLabel] == imageMetadata.ContentSignature {
+				if repoImage.Labels[image.WerfTagLabel] == imageMetadata.Tag {
 					continue outerLoop
 				}
 			}
@@ -574,18 +576,18 @@ func (m *imagesCleanupManager) getImageUnusedCommitHashes(resultImageRepoImageLi
 	return unusedImageCommitHashes, nil
 }
 
-func (m *imagesCleanupManager) getImageRepoImageListWithoutRelatedImageMetadata(imageRepoImageListToCleanup map[string][]*image.Info, imageContentSignatureRepoImageListToCleanup map[string]map[string][]*image.Info) (map[string][]*image.Info, error) {
+func (m *imagesCleanupManager) getImageRepoImageListWithoutRelatedImageMetadata(imageRepoImageListToCleanup map[string][]*image.Info, imageTagRepoImageListToCleanup map[string]map[string][]*image.Info) (map[string][]*image.Info, error) {
 	imageRepoImageListWithoutRelatedCommit := map[string][]*image.Info{}
 
 	for imageName, repoImageListToCleanup := range imageRepoImageListToCleanup {
 		unusedRepoImageList := repoImageListToCleanup
 
-		contentSignatureRepoImageListToCleanup, ok := imageContentSignatureRepoImageListToCleanup[imageName]
+		tagRepoImageListToCleanup, ok := imageTagRepoImageListToCleanup[imageName]
 		if !ok {
-			contentSignatureRepoImageListToCleanup = map[string][]*image.Info{}
+			tagRepoImageListToCleanup = map[string][]*image.Info{}
 		}
 
-		for _, filteredRepoImageListToCleanup := range contentSignatureRepoImageListToCleanup {
+		for _, filteredRepoImageListToCleanup := range tagRepoImageListToCleanup {
 			unusedRepoImageList = exceptRepoImageList(unusedRepoImageList, filteredRepoImageListToCleanup...)
 		}
 
@@ -595,15 +597,15 @@ func (m *imagesCleanupManager) getImageRepoImageListWithoutRelatedImageMetadata(
 	return imageRepoImageListWithoutRelatedCommit, nil
 }
 
-// getImageContentSignatureExistingCommitHashes groups images, content signatures and commit hashes which exist in the git repo.
-func (m *imagesCleanupManager) getImageContentSignatureExistingCommitHashes(ctx context.Context) (map[string]map[string][]plumbing.Hash, error) {
-	imageContentSignatureCommitHashes := map[string]map[string][]plumbing.Hash{}
+// getImageTagExistingCommitHashes groups images, content signatures and commit hashes which exist in the git repo.
+func (m *imagesCleanupManager) getImageTagExistingCommitHashes(ctx context.Context) (map[string]map[string][]plumbing.Hash, error) {
+	imageTagCommitHashes := map[string]map[string][]plumbing.Hash{}
 
 	for _, imageName := range m.ImageNameList {
-		imageContentSignatureCommitHashes[imageName] = map[string][]plumbing.Hash{}
+		imageTagCommitHashes[imageName] = map[string][]plumbing.Hash{}
 
-		for commitHash, imageMetadata := range m.getContentSignatureCommitHashes()[imageName] {
-			commitHashes, ok := imageContentSignatureCommitHashes[imageName][imageMetadata.ContentSignature]
+		for commitHash, imageMetadata := range m.getTagCommitHashes()[imageName] {
+			commitHashes, ok := imageTagCommitHashes[imageName][imageMetadata.Tag]
 			if !ok {
 				commitHashes = []plumbing.Hash{}
 			}
@@ -615,12 +617,12 @@ func (m *imagesCleanupManager) getImageContentSignatureExistingCommitHashes(ctx 
 
 			if exist {
 				commitHashes = append(commitHashes, commitHash)
-				imageContentSignatureCommitHashes[imageName][imageMetadata.ContentSignature] = commitHashes
+				imageTagCommitHashes[imageName][imageMetadata.Tag] = commitHashes
 			}
 		}
 	}
 
-	return imageContentSignatureCommitHashes, nil
+	return imageTagCommitHashes, nil
 }
 
 func deployedDockerImages(kubernetesClient kubernetes.Interface, kubernetesNamespace string) ([]string, error) {

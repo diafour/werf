@@ -288,7 +288,7 @@ func (storage *LocalDockerServerStagesStorage) GetContentSignatureCommits(ctx co
 	return res, nil
 }
 
-func (storage *LocalDockerServerStagesStorage) GetCommitsByContentSignature(ctx context.Context, projectName string) (map[string][]string, error) {
+func (storage *LocalDockerServerStagesStorage) GetCommitsByMetaTag(ctx context.Context, projectName string) (map[string][]string, error) {
 	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.GetCommitsByContentSignature %s\n", projectName)
 
 	res := map[string][]string{}

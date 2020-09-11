@@ -214,10 +214,16 @@ func flattenRepoImages(repoImages map[string][]*image.Info) (repoImageList []*im
 	return
 }
 
-func deleteStageInStagesStorage(ctx context.Context, stagesManager *stages_manager.StagesManager, options storage.DeleteImageOptions, dryRun bool, stages ...*image.StageDescription) error {
+func (m *imagesCleanupManager) deleteStageInStagesStorage(ctx context.Context, stages ...*image.StageDescription) error {
+	options := storage.DeleteImageOptions{
+		RmiForce:      false,
+		SkipUsedImage: true,
+		RmForce:       false,
+	}
+
 	for _, stageDesc := range stages {
-		if !dryRun {
-			if err := stagesManager.DeleteStages(ctx, options, stageDesc); err != nil {
+		if !m.DryRun {
+			if err := m.StagesManager.DeleteStages(ctx, options, stageDesc); err != nil {
 				if err := handleDeleteStageOrImageError(ctx, err, stageDesc.Info.Name); err != nil {
 					return err
 				}
@@ -229,6 +235,8 @@ func deleteStageInStagesStorage(ctx context.Context, stagesManager *stages_manag
 		logboek.Context(ctx).Default().LogFDetails("  tag: %s\n", stageDesc.Info.Tag)
 		logboek.Context(ctx).LogOptionalLn()
 	}
+
+	m.deleteStage(stages...)
 
 	return nil
 }

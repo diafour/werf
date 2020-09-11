@@ -38,7 +38,7 @@ type StagesStorage interface {
 	PutContentSignatureCommit(ctx context.Context, projectName, contentSignature, commit string) error
 	RmContentSignatureCommit(ctx context.Context, projectName, contentSignature, commit string) error
 	GetContentSignatureCommits(ctx context.Context, projectName, contentSignature string) ([]string, error)
-	GetCommitsByContentSignature(ctx context.Context, projectName string) (map[string][]string, error)
+	GetCommitsByMetaTag(ctx context.Context, projectName string) (map[string][]string, error)
 
 	GetClientIDRecords(ctx context.Context, projectName string) ([]*ClientIDRecord, error)
 	PostClientIDRecord(ctx context.Context, projectName string, rec *ClientIDRecord) error
