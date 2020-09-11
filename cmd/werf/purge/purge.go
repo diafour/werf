@@ -142,30 +142,13 @@ func runPurge() error {
 		return err
 	}
 
-	imagesRepo, err := common.GetImagesRepo(ctx, projectName, &commonCmdData)
-	if err != nil {
-		return err
-	}
-
-	imagesNames, err := common.GetManagedImagesNames(ctx, projectName, stagesStorage, werfConfig)
-	if err != nil {
-		return err
-	}
-	logboek.Debug().LogF("Managed images names: %v\n", imagesNames)
-
 	purgeOptions := cleaning.PurgeOptions{
-		ImagesPurgeOptions: cleaning.ImagesPurgeOptions{
-			ImageNameList: imagesNames,
-			DryRun:        *commonCmdData.DryRun,
-		},
-		StagesPurgeOptions: cleaning.StagesPurgeOptions{
 			RmContainersThatUseWerfImages: cmdData.Force,
 			DryRun:                        *commonCmdData.DryRun,
-		},
 	}
 
 	logboek.LogOptionalLn()
-	if err := cleaning.Purge(ctx, projectName, imagesRepo, storageLockManager, stagesManager, purgeOptions); err != nil {
+	if err := cleaning.Purge(ctx, projectName, storageLockManager, stagesManager, purgeOptions); err != nil {
 		return err
 	}
 

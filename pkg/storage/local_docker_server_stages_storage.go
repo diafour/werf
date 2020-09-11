@@ -222,6 +222,21 @@ func (storage *LocalDockerServerStagesStorage) StoreImage(ctx context.Context, i
 	return storage.LocalDockerServerRuntime.TagBuiltImageByName(ctx, img)
 }
 
+func (storage *LocalDockerServerStagesStorage) IsContentSignatureCommitExist(ctx context.Context, projectName, contentSignature, commit string) (bool, error) {
+	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.IsContentSignatureCommitExist %s %s %s\n", projectName, contentSignature, commit)
+
+	fullImageName := localImageMetadataByCommitImageRecordName(projectName, contentSignature, commit)
+	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.PutContentSignatureCommit full image name: %s\n", fullImageName)
+
+	if exists, err := docker.ImageExist(ctx, fullImageName); err != nil {
+		return false, fmt.Errorf("unable to check existence of image %q: %s", fullImageName, err)
+	} else if exists {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (storage *LocalDockerServerStagesStorage) PutContentSignatureCommit(ctx context.Context, projectName, contentSignature, commit string) error {
 	logboek.Context(ctx).Debug().LogF("-- LocalDockerServerStagesStorage.PutContentSignatureCommit %s %s %s\n", projectName, contentSignature, commit)
 

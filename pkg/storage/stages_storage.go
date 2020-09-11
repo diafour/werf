@@ -35,6 +35,7 @@ type StagesStorage interface {
 	RmManagedImage(ctx context.Context, projectName, imageName string) error
 	GetManagedImages(ctx context.Context, projectName string) ([]string, error)
 
+	IsContentSignatureCommitExist(ctx context.Context, projectName, contentSignature, commit string) (bool, error)
 	PutContentSignatureCommit(ctx context.Context, projectName, contentSignature, commit string) error
 	RmContentSignatureCommit(ctx context.Context, projectName, contentSignature, commit string) error
 	GetContentSignatureCommits(ctx context.Context, projectName, contentSignature string) ([]string, error)

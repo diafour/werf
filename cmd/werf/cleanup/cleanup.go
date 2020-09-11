@@ -165,17 +165,6 @@ func runCleanup() error {
 		return err
 	}
 
-	imagesRepo, err := common.GetImagesRepo(ctx, projectName, &commonCmdData)
-	if err != nil {
-		return err
-	}
-
-	imagesNames, err := common.GetManagedImagesNames(ctx, projectName, stagesStorage, werfConfig)
-	if err != nil {
-		return err
-	}
-	logboek.Debug().LogF("Managed images names: %v\n", imagesNames)
-
 	localGitRepo, err := common.GetLocalGitRepoForImagesCleanup(projectDir, &commonCmdData)
 	if err != nil {
 		return err
@@ -187,23 +176,16 @@ func runCleanup() error {
 	}
 
 	cleanupOptions := cleaning.CleanupOptions{
-		ImagesCleanupOptions: cleaning.ImagesCleanupOptions{
-			ImageNameList:                           imagesNames,
 			LocalGit:                                localGitRepo,
 			KubernetesContextClients:                kubernetesContextClients,
 			KubernetesNamespaceRestrictionByContext: common.GetKubernetesNamespaceRestrictionByContext(&commonCmdData, kubernetesContextClients),
 			WithoutKube:                             *commonCmdData.WithoutKube,
 			GitHistoryBasedCleanupOptions:           werfConfig.Meta.Cleanup,
 			DryRun:                                  *commonCmdData.DryRun,
-		},
-		StagesCleanupOptions: cleaning.StagesCleanupOptions{
-			ImageNameList: imagesNames,
-			DryRun:        *commonCmdData.DryRun,
-		},
 	}
 
 	logboek.LogOptionalLn()
-	if err := cleaning.Cleanup(ctx, projectName, imagesRepo, storageLockManager, stagesManager, cleanupOptions); err != nil {
+	if err := cleaning.Cleanup(ctx, projectName, stagesManager, storageLockManager, cleanupOptions); err != nil {
 		return err
 	}
 

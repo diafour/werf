@@ -44,13 +44,9 @@ import (
 	managed_images_ls "github.com/werf/werf/cmd/werf/managed_images/ls"
 	managed_images_rm "github.com/werf/werf/cmd/werf/managed_images/rm"
 
-	images_cleanup "github.com/werf/werf/cmd/werf/images/cleanup"
 	images_publish "github.com/werf/werf/cmd/werf/images/publish"
-	images_purge "github.com/werf/werf/cmd/werf/images/purge"
 
 	stages_build "github.com/werf/werf/cmd/werf/stages/build"
-	stages_cleanup "github.com/werf/werf/cmd/werf/stages/cleanup"
-	stages_purge "github.com/werf/werf/cmd/werf/stages/purge"
 	stages_switch "github.com/werf/werf/cmd/werf/stages/switch_from_local"
 	stages_sync "github.com/werf/werf/cmd/werf/stages/sync"
 
@@ -203,8 +199,6 @@ func imagesCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		images_publish.NewCmd(),
-		images_cleanup.NewCmd(),
-		images_purge.NewCmd(),
 	)
 
 	return cmd
@@ -217,8 +211,6 @@ func stagesCmd() *cobra.Command {
 	}
 	cmd.AddCommand(
 		stages_build.NewCmd(),
-		stages_cleanup.NewCmd(),
-		stages_purge.NewCmd(),
 		stages_switch.NewCmd(),
 		stages_sync.NewCmd(),
 	)

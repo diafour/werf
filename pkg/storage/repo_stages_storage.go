@@ -279,6 +279,21 @@ func (storage *RepoStagesStorage) ShouldFetchImage(_ context.Context, img contai
 	}
 }
 
+func (storage *RepoStagesStorage) IsContentSignatureCommitExist(ctx context.Context, projectName, contentSignature, commit string) (bool, error) {
+	logboek.Context(ctx).Debug().LogF("-- RepoStagesStorage.IsContentSignatureCommitExist %s %s %s\n", projectName, contentSignature, commit)
+
+	fullImageName := repoImageMetadataByCommitImageRecordName(storage.RepoAddress, contentSignature, commit)
+	logboek.Context(ctx).Debug().LogF("-- RepoStagesStorage.IsContentSignatureCommitExist full image name: %s\n", fullImageName)
+
+	if img, err := storage.DockerRegistry.TryGetRepoImage(ctx, fullImageName); err != nil {
+		return false, fmt.Errorf("unable to get repo image %s: %s", fullImageName, err)
+	} else if img != nil {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (storage *RepoStagesStorage) PutContentSignatureCommit(ctx context.Context, projectName, contentSignature, commit string) error {
 	logboek.Context(ctx).Debug().LogF("-- RepoStagesStorage.PutContentSignatureCommit %s %s %s\n", projectName, contentSignature, commit)
 
