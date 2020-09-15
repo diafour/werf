@@ -125,6 +125,7 @@ func DoTasks(ctx context.Context, numberOfTasks int, options DoTasksOptions, tas
 
 			for workerTaskId := 0; workerTaskId < workerNumberOfTasks; workerTaskId++ {
 				taskId := calculateTaskId(numberOfTasks, numberOfWorkers, workerId, workerTaskId)
+				logboek.Context(workerContext).Debug().LogF("Task %d/%d\n", taskId, numberOfTasks)
 				err := taskFunc(workerContext, taskId)
 
 				ch := doneTaskCh
@@ -179,7 +180,7 @@ func DoTasks(ctx context.Context, numberOfTasks int, options DoTasksOptions, tas
 				if logboek.Context(ctx).Info().IsAccepted() {
 					for _, buf := range append(
 						workersDoneBuffs,
-						workersBuffs...
+						workersBuffs...,
 					) {
 						processBuf(ctx, buf)
 					}
