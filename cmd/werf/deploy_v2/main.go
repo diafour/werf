@@ -309,10 +309,12 @@ func runDeploy() error {
 		Atomic:          NewBool(false),
 	})
 
-	helm_v3.InitActionConfig(ctx, cmd_helm.Settings, actionConfig, helm_v3.InitActionConfigOptions{
+	if err := helm_v3.InitActionConfig(ctx, cmd_helm.Settings, actionConfig, helm_v3.InitActionConfigOptions{
 		StatusProgressPeriod:      time.Duration(*commonCmdData.StatusProgressPeriodSeconds) * time.Second,
 		HooksStatusProgressPeriod: time.Duration(*commonCmdData.HooksStatusProgressPeriodSeconds) * time.Second,
-	})
+	}); err != nil {
+		return err
+	}
 
 	werfChartInitOpts := werf_chart.WerfChartInitOptions{
 		ReleaseName:       releaseName,

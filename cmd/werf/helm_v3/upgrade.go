@@ -29,7 +29,7 @@ func NewUpgradeCmd(actionConfig *action.Configuration) *cobra.Command {
 
 	oldRunE := cmd.RunE
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if err := werf.Init(*commonCmdData.TmpDir, *commonCmdData.HomeDir); err != nil {
+		if err := werf.Init(*upgradeCmdData.TmpDir, *upgradeCmdData.HomeDir); err != nil {
 			return err
 		}
 

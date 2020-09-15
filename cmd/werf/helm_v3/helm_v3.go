@@ -29,6 +29,8 @@ func NewCmd() *cobra.Command {
 		Short: "Manage application deployment with helm",
 	}
 
+	os.Setenv("HELM_EXPERIMENTAL_OCI", "1")
+
 	cmd.PersistentFlags().StringVarP(cmd_helm.Settings.GetNamespaceP(), "namespace", "n", *cmd_helm.Settings.GetNamespaceP(), "namespace scope for this request")
 	cmd_werf_common.SetupKubeConfig(&commonCmdData, cmd)
 	cmd_werf_common.SetupKubeConfigBase64(&commonCmdData, cmd)
@@ -59,6 +61,7 @@ func NewCmd() *cobra.Command {
 		cmd_helm.NewTestCmd(actionConfig, os.Stdout),
 		cmd_helm.NewVerifyCmd(os.Stdout),
 		cmd_helm.NewVersionCmd(os.Stdout),
+		cmd_helm.NewChartCmd(actionConfig, os.Stdout),
 	)
 
 	cmd_helm.LoadPlugins(cmd, os.Stdout)
